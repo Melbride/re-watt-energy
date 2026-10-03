@@ -396,6 +396,7 @@ class DisputeMessage(Base):
     )
 
     dispute: Mapped["Dispute"] = relationship("Dispute", back_populates="messages")
+    author: Mapped["User | None"] = relationship("User")
 
 
 class Feedback(Base, TimestampMixin):

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from ...config import settings
 from ...database import get_db
-from ...enums import ListingStatus, MatchStatus, TransactionStatus
+from ...enums import ListingStatus, MatchStatus, NotificationType, TransactionStatus
 from ...models import (
     BuyerRequirement,
     Category,
@@ -25,6 +25,7 @@ from ...models import (
 )
 from ...security import get_current_user, require_roles
 from ...services.matching import allocate_supply, compatible_listings
+from ...services.notifications import create_notification
 from ...services.units import (
     are_compatible,
     base_unit_for,
@@ -272,6 +273,11 @@ def create_requirement(
     db: Session = Depends(get_db),
     user: User = Depends(require_roles("buyer")),
 ):
+    if not user.buyer_profile or user.buyer_profile.verification_status != "verified":
+        raise HTTPException(
+            status_code=403,
+            detail="Buyer verification is required before posting a requirement.",
+        )
     material = db.get(Material, payload.material_id)
     if material is None or not material.is_active:
         raise HTTPException(status_code=404, detail="Material not found.")
@@ -381,6 +387,16 @@ def create_match(
             }
         )
     match.aggregation_snapshot = snapshot
+    for allocation in allocations:
+        create_notification(
+            db,
+            user_id=allocation["listing"].supplier_id,
+            notification_type=NotificationType.MATCH_INVITE.value,
+            title="A buyer requested your material",
+            body=f"A buyer's requirement matches your listing: {requirement.title}.",
+            link=f"/matches/{match.id}",
+            meta={"match_id": match.id, "requirement_id": requirement.id},
+        )
     if matched_quantity >= Decimal(requirement.quantity_base):
         match.ai_explanation = (
             f"{len(allocations)} supplier offer(s) collectively cover the requested "
@@ -452,6 +468,19 @@ def respond_to_match(
     item.status = "accepted" if payload.accept else "declined"
     item.response_note = payload.note
     item.responded_at = datetime.now(timezone.utc)
+    create_notification(
+        db,
+        user_id=match.buyer_id,
+        notification_type=(
+            NotificationType.MATCH_ACCEPTED.value
+            if payload.accept
+            else NotificationType.MATCH_DECLINED.value
+        ),
+        title=("A supplier accepted your match" if payload.accept else "A supplier declined your match"),
+        body=f"{user.full_name} {'accepted' if payload.accept else 'declined'} the material request.",
+        link=f"/matches/{match.id}",
+        meta={"match_id": match.id, "supplier_id": user.id},
+    )
 
     if not payload.accept:
         match.status = MatchStatus.DECLINED.value
@@ -531,6 +560,25 @@ def respond_to_match(
             match.status = MatchStatus.CONFIRMED.value
             match.confirmed_at = datetime.now(timezone.utc)
             match.requirement.status = "confirmed"
+            for candidate in match.items:
+                create_notification(
+                    db,
+                    user_id=candidate.supplier_id,
+                    notification_type=NotificationType.MATCH_CONFIRMED.value,
+                    title="Your marketplace transaction is confirmed",
+                    body=f"Transaction {candidate.transaction.id} is ready for handover.",
+                    link=f"/transactions/{candidate.transaction.id}",
+                    meta={"match_id": match.id, "transaction_id": candidate.transaction.id},
+                )
+            create_notification(
+                db,
+                user_id=match.buyer_id,
+                notification_type=NotificationType.MATCH_CONFIRMED.value,
+                title="Your marketplace match is confirmed",
+                body=f"{len(created_transactions)} transaction(s) are ready for supplier handover.",
+                link=f"/transactions",
+                meta={"match_id": match.id, "transaction_ids": created_transactions},
+            )
             db.commit()
         except Exception:
             db.rollback()
@@ -586,6 +634,15 @@ def confirm_receipt(
     transaction.quantity_received_base = received_base
     transaction.quantity_confirmed_at = datetime.now(timezone.utc)
     transaction.status = TransactionStatus.PAYMENT_PENDING.value
+    create_notification(
+        db,
+        user_id=transaction.supplier_id,
+        notification_type=NotificationType.TRANSACTION.value,
+        title="The buyer confirmed receipt",
+        body=f"The buyer confirmed receipt for transaction {transaction.id}.",
+        link=f"/transactions/{transaction.id}",
+        meta={"transaction_id": transaction.id, "status": transaction.status},
+    )
     db.commit()
     return {"status": transaction.status, "quantity_received": float(received_base)}
 
@@ -618,6 +675,15 @@ def record_payment(
         status="pending",
     )
     db.add(payment)
+    create_notification(
+        db,
+        user_id=transaction.supplier_id,
+        notification_type=NotificationType.PAYMENT.value,
+        title="A payment was recorded",
+        body=f"The buyer recorded a payment for transaction {transaction.id}.",
+        link=f"/transactions/{transaction.id}",
+        meta={"transaction_id": transaction.id},
+    )
     db.commit()
     db.refresh(payment)
     return {"id": payment.id, "status": payment.status, "message": "Payment recorded for manual confirmation; no funds were moved."}
@@ -640,5 +706,14 @@ def confirm_payment_received(
     payment.released_at = datetime.now(timezone.utc)
     payment.transaction.status = TransactionStatus.COMPLETED.value
     payment.transaction.completed_at = datetime.now(timezone.utc)
+    create_notification(
+        db,
+        user_id=payment.payer_id,
+        notification_type=NotificationType.PAYMENT.value,
+        title="Your payment was confirmed",
+        body=f"The supplier confirmed payment for transaction {payment.transaction_id}.",
+        link=f"/transactions/{payment.transaction_id}",
+        meta={"transaction_id": payment.transaction_id, "payment_id": payment.id},
+    )
     db.commit()
     return {"status": payment.status, "transaction_status": payment.transaction.status}

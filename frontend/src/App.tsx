@@ -1,40 +1,59 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   api,
+  ApiError,
   Category,
   jsonBody,
+  Dispute,
   Listing,
   Match,
+  Notification,
   Requirement,
   Transaction,
   User,
 } from "./api";
 
-type View = "overview" | "supply" | "listings" | "requirements" | "matches" | "transactions" | "admin";
+type View = "overview" | "supply" | "listings" | "requirements" | "matches" | "transactions" | "notifications" | "disputes" | "admin";
 
 const TOKEN_KEY = "rewatt.accessToken";
-const conditions = ["dry", "wet", "mixed", "processed", "unsorted"];
+const conditions = ["dry", "wet", "mixed", "contaminated", "processed", "unsorted", "unknown"];
+const views: View[] = ["overview", "supply", "listings", "requirements", "matches", "transactions", "notifications", "disputes", "admin"];
+
+function viewFromPath(pathname: string): View {
+  const lastPart = pathname.split("/").filter(Boolean).at(-1);
+  return views.includes(lastPart as View) ? (lastPart as View) : "overview";
+}
 
 function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_KEY));
   const [user, setUser] = useState<User | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [listings, setListings] = useState<Listing[]>([]);
+  const [publicDataLoading, setPublicDataLoading] = useState(true);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [disputes, setDisputes] = useState<Dispute[]>([]);
   const [pendingUsers, setPendingUsers] = useState<
     Array<{ user_id: number; name: string; email: string; role: string; business_name?: string; county?: string }>
   >([]);
-  const [view, setView] = useState<View>("overview");
+  const view = viewFromPath(location.pathname);
+  const setView = useCallback((nextView: View) => navigate(`/app/${nextView}`), [navigate]);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [authLoading, setAuthLoading] = useState(() => Boolean(sessionStorage.getItem(TOKEN_KEY)));
   const [authMode, setAuthMode] = useState<"login" | "register">("register");
   const [role, setRole] = useState<"supplier" | "buyer">("supplier");
   const [showAuth, setShowAuth] = useState(false);
 
   const loadPublicData = useCallback(async () => {
+    setPublicDataLoading(true);
     try {
       const [catalog, supply] = await Promise.all([
         api<Category[]>("/catalog"),
@@ -44,21 +63,31 @@ function App() {
       setListings(supply);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not load marketplace data.");
+    } finally {
+      setPublicDataLoading(false);
     }
   }, []);
 
   const loadWorkspace = useCallback(
     async (activeToken: string, activeUser: User) => {
-      const [supply, ownRequirements, ownMatches, ownTransactions] = await Promise.all([
+      setWorkspaceLoading(true);
+      try {
+      const [supply, ownRequirements, ownMatches, ownTransactions, userNotifications, userDisputes] = await Promise.all([
         api<Listing[]>("/listings", {}, activeToken),
-        api<Requirement[]>("/requirements", {}, activeToken),
+        activeUser.role === "buyer" || activeUser.role === "admin"
+          ? api<Requirement[]>("/requirements", {}, activeToken)
+          : Promise.resolve([] as Requirement[]),
         api<Match[]>("/matches", {}, activeToken),
         api<Transaction[]>("/transactions", {}, activeToken),
+        api<Notification[]>("/notifications", {}, activeToken),
+        api<Dispute[]>("/disputes", {}, activeToken),
       ]);
       setListings(supply);
       setRequirements(ownRequirements);
       setMatches(ownMatches);
       setTransactions(ownTransactions);
+      setNotifications(userNotifications);
+      setDisputes(userDisputes);
       if (activeUser.role === "admin") {
         const pending = await api<typeof pendingUsers>(
           "/admin/verifications/pending",
@@ -66,6 +95,9 @@ function App() {
           activeToken,
         );
         setPendingUsers(pending);
+      }
+      } finally {
+        setWorkspaceLoading(false);
       }
     },
     [],
@@ -78,6 +110,7 @@ function App() {
   useEffect(() => {
     if (!token) {
       setUser(null);
+      setAuthLoading(false);
       return;
     }
     let mounted = true;
@@ -85,19 +118,57 @@ function App() {
       .then(async (activeUser) => {
         if (!mounted) return;
         setUser(activeUser);
-        await loadWorkspace(token, activeUser);
+        try {
+          await loadWorkspace(token, activeUser);
+        } catch (reason) {
+          setError(reason instanceof Error ? reason.message : "Could not load your workspace.");
+        } finally {
+          setAuthLoading(false);
+        }
       })
-      .catch(() => {
-        sessionStorage.removeItem(TOKEN_KEY);
+      .catch((reason) => {
         if (mounted) {
-          setToken(null);
-          setUser(null);
+          if (reason instanceof ApiError && reason.status === 401) {
+            sessionStorage.removeItem(TOKEN_KEY);
+            setToken(null);
+            setUser(null);
+            setError("Your session expired. Please sign in again.");
+          } else {
+            setError(
+              reason instanceof Error
+                ? reason.message
+                : "Could not validate your session.",
+            );
+          }
+          setAuthLoading(false);
         }
       });
     return () => {
       mounted = false;
     };
   }, [token, loadWorkspace]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      if (location.pathname.startsWith("/app")) navigate("/", { replace: true });
+      return;
+    }
+    if (!location.pathname.startsWith("/app/")) {
+      navigate(`/app/${user.role === "admin" ? "admin" : "overview"}`, { replace: true });
+      return;
+    }
+    const requestedView = location.pathname.split("/").filter(Boolean).at(-1);
+    if (!views.includes(requestedView as View)) {
+      navigate(`/app/${user.role === "admin" ? "admin" : "overview"}`, { replace: true });
+      return;
+    }
+    if ((view === "listings" && user.role !== "supplier") ||
+        (view === "requirements" && user.role !== "buyer") ||
+        (view === "admin" && user.role !== "admin")) {
+      navigate(`/app/${user.role === "admin" ? "admin" : "overview"}`, { replace: true });
+    }
+  }, [authLoading, location.pathname, navigate, user, view]);
 
   const materials = useMemo(
     () => categories.flatMap((category) => category.materials),
@@ -143,7 +214,8 @@ function App() {
           ? "Your account is ready. An admin must verify your business before you can publish or transact."
           : `Welcome back, ${response.user.full_name.split(" ")[0]}.`,
       );
-      setView("overview");
+      setAuthLoading(false);
+      navigate(`/app/${response.user.role === "admin" ? "admin" : "overview"}`);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Authentication failed.");
     } finally {
@@ -155,9 +227,13 @@ function App() {
     sessionStorage.removeItem(TOKEN_KEY);
     setToken(null);
     setUser(null);
+    setAuthLoading(false);
+    navigate("/");
     setRequirements([]);
     setMatches([]);
     setTransactions([]);
+    setNotifications([]);
+    setDisputes([]);
     setNotice("You have been signed out.");
   };
 
@@ -229,15 +305,22 @@ function App() {
         }),
       }, token);
       formElement.reset();
-      setNotice("Requirement posted. Searching compatible supplier listings…");
-      const match = await api<Match>(`/requirements/${requirement.id}/matches`, {
-        method: "POST",
-      }, token);
-      setMatches((current) => [match, ...current]);
-      setRequirements((current) => [requirement, ...current]);
-      setView("matches");
-      if (match.coverage_percent < 100) {
-        setNotice(`Your requirement is posted. Current compatible supply covers ${match.coverage_percent.toFixed(0)}%; more listings may appear later.`);
+      setRequirements((current) => [requirement, ...current.filter((item) => item.id !== requirement.id)]);
+      try {
+        const match = await api<Match>(`/requirements/${requirement.id}/matches`, {
+          method: "POST",
+        }, token);
+        setMatches((current) => [match, ...current.filter((item) => item.id !== match.id)]);
+        setView("matches");
+        setNotice(match.coverage_percent < 100
+          ? `Requirement posted. Current compatible supply covers ${match.coverage_percent.toFixed(0)}%; more listings may appear later.`
+          : "Requirement posted and the backend found a complete aggregated match.");
+      } catch (reason) {
+        if (!(reason instanceof ApiError && reason.status === 404 && reason.message.includes("No compatible active supply"))) {
+          throw reason;
+        }
+        setNotice("Requirement posted. No compatible supply is available yet; check matches again after suppliers publish listings.");
+        setView("matches");
       }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not post your requirement.");
@@ -341,6 +424,106 @@ function App() {
     }
   };
 
+  const handover = async (transactionId: number) => {
+    if (!token) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/transactions/${transactionId}/handover`, { method: "POST" }, token);
+      setNotice("Handover recorded. The buyer can confirm the received quantity.");
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not record handover.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openDispute = async (transactionId: number) => {
+    if (!token) return;
+    const reason = window.prompt("Briefly describe the issue with this transaction:")?.trim();
+    if (!reason) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/transactions/${transactionId}/disputes`, {
+        method: "POST",
+        body: jsonBody({ reason }),
+      }, token);
+      setNotice("Dispute opened. The other party and marketplace admins have been notified.");
+      await refresh();
+      setView("disputes");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not open the dispute.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const sendDisputeMessage = async (disputeId: number, body: string) => {
+    if (!token) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/disputes/${disputeId}/messages`, {
+        method: "POST",
+        body: jsonBody({ body }),
+      }, token);
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not send the dispute update.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resolveDispute = async (disputeId: number, resolution: string, notes: string) => {
+    if (!token) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api(`/disputes/${disputeId}/resolve`, {
+        method: "PATCH",
+        body: jsonBody({ resolution, notes }),
+      }, token);
+      setNotice("Dispute resolution recorded.");
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not resolve the dispute.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const markNotificationRead = async (notificationId: number) => {
+    if (!token) return;
+    try {
+      await api(`/notifications/${notificationId}/read`, { method: "POST" }, token);
+      setNotifications((current) => current.map((notification) => notification.id === notificationId
+        ? { ...notification, read_at: new Date().toISOString() }
+        : notification));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update the notification.");
+    }
+  };
+
+  const markAllNotificationsRead = async () => {
+    if (!token) return;
+    try {
+      await api("/notifications/read-all", { method: "POST" }, token);
+      setNotifications((current) => current.map((notification) => ({
+        ...notification,
+        read_at: notification.read_at || new Date().toISOString(),
+      })));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not update notifications.");
+    }
+  };
+
+  if (authLoading) {
+    return <div className="full-page-loading" role="status">Restoring your secure session?</div>;
+  }
+
   if (!user) {
     return (
       <Landing
@@ -354,13 +537,14 @@ function App() {
         busy={busy}
         categories={categories}
         listings={listings}
+        loading={publicDataLoading}
         error={error}
         setError={setError}
       />
     );
   }
 
-  const activeView = user.role === "admin" && view === "overview" ? "admin" : view;
+  const activeView = view;
   const navItems: Array<{ id: View; label: string; icon: string }> = [
     { id: "overview", label: "Overview", icon: "⌂" },
     { id: "supply", label: "Browse supply", icon: "◉" },
@@ -369,6 +553,8 @@ function App() {
     { id: "matches", label: "Matches", icon: "⇄" },
     { id: "transactions", label: "Transactions", icon: "↗" },
     ...(user.role === "admin" ? [{ id: "admin" as View, label: "Verification", icon: "✓" }] : []),
+    { id: "notifications", label: "Notifications", icon: "N" },
+    { id: "disputes", label: "Disputes", icon: "!" },
   ];
 
   const pageTitle: Record<View, string> = {
@@ -378,7 +564,9 @@ function App() {
     requirements: "Procurement requirements",
     matches: "Aggregated matches",
     transactions: "Transaction history",
-    admin: "Verification queue",
+    notifications: "Notifications",
+    disputes: "Disputes",
+    admin: "Marketplace operations",
   };
 
   return (
@@ -399,6 +587,9 @@ function App() {
               <span className="nav-icon">{item.icon}</span>{item.label}
               {item.id === "matches" && matches.length > 0 && (
                 <span className="nav-count">{matches.length}</span>
+              )}
+              {item.id === "notifications" && notifications.some((notification) => !notification.read_at) && (
+                <span className="nav-count">{notifications.filter((notification) => !notification.read_at).length}</span>
               )}
             </button>
           ))}
@@ -424,13 +615,14 @@ function App() {
         <header className="topbar">
           <div className="breadcrumbs">Workspace <span>/</span> {pageTitle[activeView]}</div>
           <div className="topbar-right">
-            <span className={`status-pill ${user.is_verified ? "verified" : "pending"}`}>
-              <span className="status-dot" />{user.is_verified ? "Verified" : "Verification pending"}
+            <span className={`status-pill ${user.is_verified || user.role === "admin" ? "verified" : "pending"}`}>
+              <span className="status-dot" />{user.role === "admin" ? "Admin access" : user.status === "rejected" ? "Verification rejected" : user.is_verified ? "Verified" : "Verification pending"}
             </span>
             <button className="icon-button" onClick={logout} title="Sign out" aria-label="Sign out">↗</button>
           </div>
         </header>
         <section className="page-content">
+          {workspaceLoading && <div className="workspace-loading" role="status">Refreshing marketplace data...</div>}
           {error && <div className="alert error-alert"><span>!</span>{error}<button onClick={() => setError("")}>×</button></div>}
           {notice && <div className="alert success-alert"><span>✓</span>{notice}<button onClick={() => setNotice("")}>×</button></div>}
           {activeView === "overview" && (
@@ -456,6 +648,7 @@ function App() {
           )}
           {activeView === "requirements" && (
             <RequirementsPage
+              user={user}
               requirements={requirements}
               materials={materials}
               busy={busy}
@@ -470,13 +663,26 @@ function App() {
               user={user}
               transactions={transactions}
               busy={busy}
+              handover={handover}
               confirmReceipt={confirmReceipt}
               recordPayment={recordPayment}
               confirmPayment={confirmPayment}
+              openDispute={openDispute}
             />
           )}
+          {activeView === "notifications" && (
+            <NotificationsPage
+              notifications={notifications}
+              markRead={markNotificationRead}
+              markAllRead={markAllNotificationsRead}
+              openLink={(link) => setView(link?.startsWith("/app/") ? viewFromPath(link) : "overview")}
+            />
+          )}
+          {activeView === "disputes" && (
+            <DisputesPage user={user} disputes={disputes} busy={busy} sendMessage={sendDisputeMessage} resolve={resolveDispute} />
+          )}
           {activeView === "admin" && (
-            <AdminPage users={pendingUsers} busy={busy} review={reviewAccount} />
+            <AdminPage users={pendingUsers} busy={busy} review={reviewAccount} listings={listings} matches={matches} transactions={transactions} disputes={disputes} />
           )}
         </section>
       </main>
@@ -495,6 +701,7 @@ function Landing(props: {
   busy: boolean;
   categories: Category[];
   listings: Listing[];
+  loading: boolean;
   error: string;
   setError: (value: string) => void;
 }) {
@@ -542,21 +749,35 @@ function Landing(props: {
         <div className="hero-art" aria-label="Illustration of material supply being aggregated">
           <div className="art-orbit orbit-one" />
           <div className="art-orbit orbit-two" />
-          <div className="orbit-label label-top">LOCAL SUPPLY <span>↘</span></div>
-          <div className="supply-card supply-one"><span className="supply-icon">♧</span><span><b>Kiambu County</b><small>500 kg · Maize cobs</small></span><strong>+500</strong></div>
-          <div className="supply-card supply-two"><span className="supply-icon icon-coral">♧</span><span><b>Murang'a County</b><small>800 kg · Maize cobs</small></span><strong>+800</strong></div>
-          <div className="aggregate-core"><span className="core-spark">✳</span><b>2,000</b><small>KG AGGREGATED</small><span className="core-sub">READY TO MATCH</span></div>
-          <div className="supply-card supply-three"><span className="supply-icon icon-gold">♧</span><span><b>Nyeri County</b><small>700 kg · Maize cobs</small></span><strong>+700</strong></div>
-          <div className="orbit-label label-bottom">ONE BUYER REQUIREMENT <span>↗</span></div>
+          <div className="orbit-label label-top">SAMPLE SUPPLY <span>↘</span></div>
+          <div className="supply-card supply-one"><span className="supply-icon">♧</span><span><b>Kiambu County</b><small>400 kg · Maize cobs</small></span><strong>+400</strong></div>
+          <div className="supply-card supply-two"><span className="supply-icon icon-coral">♧</span><span><b>Murang'a County</b><small>400 kg · Maize cobs</small></span><strong>+400</strong></div>
+          <div className="aggregate-core"><span className="core-spark">✳</span><b>2,000</b><small>KG AGGREGATED</small><span className="core-sub">SAMPLE FLOW</span></div>
+          <div className="supply-card supply-three"><span className="supply-icon icon-gold">♧</span><span><b>Nyeri County</b><small>400 kg · Maize cobs</small></span><strong>+400</strong></div>
+          <div className="orbit-label label-bottom">SAMPLE REQUIREMENT <span>↗</span></div>
           <div className="art-decoration leaf-shape">✳</div>
         </div>
       </section>
 
       <section className="proof-strip">
         <div><strong>2,000 kg</strong><span>One buyer requirement</span></div>
-        <div><strong>3 suppliers</strong><span>Small lots, brought together</span></div>
+        <div><strong>5 suppliers</strong><span>Small lots, brought together</span></div>
         <div><strong>One workflow</strong><span>Discover. Match. Track.</span></div>
         <div className="proof-mark">RE-WATT <span>MARKETPLACE</span></div>
+      </section>
+
+      <section className="golden-demo" aria-labelledby="golden-demo-title">
+        <div className="golden-demo-heading"><div><div className="section-kicker">ILLUSTRATIVE GOLDEN DEMO - NOT LIVE INVENTORY</div><h2 id="golden-demo-title">Five small lots. One buyer's 2,000 kg need.</h2><p>This fixed example shows the marketplace value proposition. Live matches and totals are always supplied by the backend.</p></div><span className="demo-total"><strong>2,000 kg</strong><small>buyer requirement</small></span></div>
+        <div className="demo-suppliers">
+          {[
+            ["Wanjiku Farm", "Kiambu"],
+            ["Mugo Growers", "Murang'a"],
+            ["Njoroge Co-op", "Nyeri"],
+            ["Kariuki Fields", "Nakuru"],
+            ["Achieng Harvest", "Uasin Gishu"],
+          ].map(([name, county], index) => <article className="demo-supplier" key={name}><span className="demo-supplier-index">0{index + 1}</span><div><strong>{name}</strong><small>{county} County - maize cobs</small></div><b>400 kg</b></article>)}
+        </div>
+        <div className="demo-caption">Sample scenario only - it does not create listings, calculate a match, or reserve real supply.</div>
       </section>
 
       <section className="how-section" id="how-it-works">
@@ -694,7 +915,7 @@ function Overview(props: {
         action={isSupplier ? <button className="button button-dark" onClick={props.newListing}>+ List material</button> : isBuyer ? <button className="button button-dark" onClick={() => props.setView("requirements")}>+ Post requirement</button> : null}
       />
       {!props.user.is_verified && props.user.role !== "admin" && (
-        <div className="verification-banner"><span className="verification-symbol">◷</span><div><strong>Your account is under review</strong><p>Our team checks business details before you can publish materials or request a match.</p></div><span className="pending-tag">IN REVIEW</span></div>
+        <div className="verification-banner"><span className="verification-symbol">◷</span><div><strong>{props.user.status === "rejected" ? "Your verification needs follow-up" : "Your account is under review"}</strong><p>{props.user.status === "rejected" ? "Contact the platform team for next steps before using marketplace actions." : "Our team checks business details before you can publish materials or request a match."}</p></div><span className="pending-tag">{props.user.status === "rejected" ? "REJECTED" : "IN REVIEW"}</span></div>
       )}
       <div className="metric-grid">
         <Metric label={isSupplier ? "Active listings" : "Available listings"} value={isSupplier ? userListings.length : props.listings.length} note="Live on the marketplace" icon="▤" />
@@ -761,12 +982,15 @@ function Supply({ listings, user }: { listings: Listing[]; user: User }) {
 }
 
 function ListingsPage(props: { user: User; listings: Listing[]; materials: ReturnType<typeof flattenMaterials>; busy: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+  const [selectedMaterialId, setSelectedMaterialId] = useState<number | null>(props.materials[0]?.id ?? null);
+  const selectedMaterial = props.materials.find((material) => material.id === selectedMaterialId) ?? props.materials[0];
   return <>
     <PageHeading eyebrow="SUPPLIER WORKSPACE" title="Your material listings" description="Turn your available materials into supply buyers can discover." />
     {!props.user.is_verified ? <div className="verification-banner"><span className="verification-symbol">◷</span><div><strong>Verification required before publishing</strong><p>We’ll activate listing tools after an admin has verified your supplier account.</p></div><span className="pending-tag">PENDING</span></div> : (
       <section className="panel form-panel"><div className="panel-head"><div><span className="panel-kicker">ADD TO THE MARKET</span><h2>List available material</h2></div></div>
         <form className="market-form" onSubmit={props.onSubmit}>
-          <label>Material<select name="material_id" required>{props.materials.map((material) => <option value={material.id} key={material.id}>{material.name}</option>)}</select></label>
+          <label>Material<select name="material_id" required value={selectedMaterial?.id ?? ""} onChange={(event) => setSelectedMaterialId(Number(event.target.value))}>{props.materials.map((material) => <option value={material.id} key={material.id}>{material.name}</option>)}</select></label>
+          {selectedMaterial && <aside className="material-insight"><strong>Material profile ? catalog guidance</strong><p>{selectedMaterial.description || "Reference material information from the Re-Watt catalog."}</p><span>Typical conditions: {selectedMaterial.typical_conditions.join(", ") || "Discuss with buyer"}</span><span>Potential uses: {selectedMaterial.primary_uses.join(", ") || "Discuss with buyer"}</span><small>Reference information only; it does not certify stock quality or replace buyer inspection.</small></aside>}
           <label>Listing title<input name="title" required minLength={3} placeholder="e.g. Dry maize cobs from this harvest" /></label>
           <div className="form-row"><label>Quantity<input name="quantity" type="number" required min="0.01" step="0.01" placeholder="500" /></label><label>Unit<select name="unit" defaultValue="kg"><option value="kg">Kilograms (kg)</option><option value="tonne">Tonnes</option><option value="bag">Bags</option></select></label><label>Condition<select name="condition">{conditions.map((condition) => <option key={condition} value={condition}>{condition}</option>)}</select></label></div>
           <div className="form-row"><label>County<input name="county" placeholder="e.g. Kiambu" /></label><label>Town<input name="city" placeholder="e.g. Thika" /></label><label>Available from<input name="available_from" type="date" /></label></div>
@@ -782,15 +1006,16 @@ function ListingsPage(props: { user: User; listings: Listing[]; materials: Retur
   </>;
 }
 
-type MaterialItem = { id: number; name: string; typical_conditions: string[] };
+type MaterialItem = { id: number; name: string; description?: string | null; typical_conditions: string[]; primary_uses: string[] };
 function flattenMaterials(categories: Category[]): MaterialItem[] {
   return categories.flatMap((category) => category.materials);
 }
 
-function RequirementsPage(props: { requirements: Requirement[]; materials: MaterialItem[]; busy: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
+function RequirementsPage(props: { user: User; requirements: Requirement[]; materials: MaterialItem[]; busy: boolean; onSubmit: (event: FormEvent<HTMLFormElement>) => void }) {
   return <>
     <PageHeading eyebrow="BUYER WORKSPACE" title="Tell the market what you need" description="Post a requirement and we’ll aggregate compatible active listings." />
-    <section className="panel form-panel"><div className="panel-head"><div><span className="panel-kicker">CREATE A REQUIREMENT</span><h2>What are you sourcing?</h2></div><span className="panel-icon">⌕</span></div>
+    {!props.user.is_verified && <div className="verification-banner"><span className="verification-symbol">&#x23F3;</span><div><strong>Verification required before posting</strong><p>Our team must verify your buyer account before you can create requirements or request supply.</p></div><span className="pending-tag">PENDING</span></div>}
+    {props.user.is_verified && <section className="panel form-panel"><div className="panel-head"><div><span className="panel-kicker">CREATE A REQUIREMENT</span><h2>What are you sourcing?</h2></div><span className="panel-icon">⌕</span></div>
       <form className="market-form" onSubmit={props.onSubmit}>
         <label>Material<select name="material_id" required>{props.materials.map((material) => <option value={material.id} key={material.id}>{material.name}</option>)}</select></label>
         <label>Requirement title<input name="title" required minLength={3} placeholder="e.g. Dry maize cobs for briquette production" /></label>
@@ -800,7 +1025,7 @@ function RequirementsPage(props: { requirements: Requirement[]; materials: Mater
         <div className="form-row"><label>Target price (KES / unit)<input name="target_price_per_unit" type="number" min="0" step="0.01" placeholder="Optional" /></label><label>Intended use<input name="intended_use" placeholder="e.g. Biomass briquettes" /></label></div>
         <div className="form-actions"><span>Matching uses material, quantity, condition, location, and price filters.</span><button className="button button-dark" disabled={props.busy}>{props.busy ? "Finding supply…" : "Post & find supply"} <span>↗</span></button></div>
       </form>
-    </section>
+    </section>}
     <section className="panel table-panel"><div className="panel-head"><div><span className="panel-kicker">YOUR BUYER DESK</span><h2>Open requirements <span className="heading-count">{props.requirements.length}</span></h2></div></div>
       {props.requirements.map((item) => <div className="listing-row" key={item.id}><div className="material-thumb small-thumb">⌕</div><div className="row-main"><strong>{item.material}</strong><span>{item.title}</span></div><div className="row-quantity"><strong>{item.quantity.toLocaleString()} {item.unit}</strong><span>requested</span></div><span className={`table-status ${item.status === "open" ? "active-status" : "pending-status"}`}>{item.status.replaceAll("_", " ")}</span></div>)}
       {props.requirements.length === 0 && <EmptyState title="No requirements posted" text="Create a requirement above to see aggregated supply results." />}
@@ -818,7 +1043,7 @@ function MatchesPage(props: { user: User; matches: Match[]; busy: boolean; respo
         <div className="table-scroll"><table><thead><tr><th>Supplier</th><th>Available material</th><th>Condition</th><th>Location</th><th>Offer</th></tr></thead><tbody>
           {match.items.map((item) => <tr key={item.listing_id}><td><span className="table-person"><i>{item.supplier_name.slice(0, 1)}</i>{item.supplier_name}{item.supplier_id === props.user.id && <small>YOU</small>}</span></td><td>{item.title}</td><td><span className="condition-tag">{item.condition}</span></td><td>{item.county || "—"}</td><td><strong>{Number(item.quantity).toLocaleString()} <small>{item.unit}</small></strong></td></tr>)}
         </tbody></table></div>
-        <div className="match-footer"><div className="insight-mark">✳</div><p><strong>Matching insight</strong><span>{match.explanation || "Backend rules matched compatible materials, conditions, and locations. This explanation does not make the final transaction decision."}</span></p>
+        <div className="match-footer"><div className="insight-mark">✳</div><p><strong>Compatibility insight - marketplace rules</strong><span>{match.explanation || "The backend has grouped compatible materials, conditions, and locations. This summary does not make the final transaction decision."}</span></p>
           {props.user.role === "supplier" && match.status === "requested" && match.items.some((item) => item.supplier_id === props.user.id) && <div className="match-actions"><button className="button button-outline" disabled={props.busy} onClick={() => props.respond(match.id, false)}>Decline</button><button className="button button-dark" disabled={props.busy} onClick={() => props.respond(match.id, true)}>Accept invitation <span>↗</span></button></div>}
         </div>
       </section>
@@ -831,42 +1056,125 @@ function TransactionsPage(props: {
   user: User;
   transactions: Transaction[];
   busy: boolean;
+  handover: (id: number) => void;
   confirmReceipt: (id: number, quantity: number) => void;
   recordPayment: (id: number) => void;
   confirmPayment: (id: number) => void;
+  openDispute: (id: number) => void;
 }) {
   const [quantities, setQuantities] = useState<Record<number, string>>({});
   return <>
-    <PageHeading eyebrow="HANDOVER & HISTORY" title="Transactions, clearly tracked." description="The platform records declared and received quantities. Payment is arranged directly between buyer and supplier." />
-    <div className="payment-note"><span>ⓘ</span><p><strong>Payments are recorded, not processed by Re-Watt.</strong> Do not mark a payment as received until funds have actually cleared.</p></div>
-    {props.transactions.map((transaction) => (
-      <section className="transaction-card panel" key={transaction.id}>
-        <div className="transaction-top"><div><span className="panel-kicker">TRANSACTION #{String(transaction.id).padStart(5, "0")}</span><h2>{transaction.material}</h2><p>{props.user.role === "buyer" ? `Supplier · ${transaction.supplier_name}` : `Buyer · ${transaction.buyer_name}`}</p></div><span className={`table-status ${transaction.status === "completed" ? "active-status" : "pending-status"}`}>{transaction.status.replaceAll("_", " ")}</span></div>
+    <PageHeading eyebrow="HANDOVER & HISTORY" title="Transactions, clearly tracked." description="Follow handover and receipt in the marketplace. Payment references are recorded for manual settlement; the platform does not move funds." />
+    <div className="payment-note"><span>i</span><p><strong>Payments are recorded, not processed by Re-Watt.</strong> Confirm funds only after they have actually cleared.</p></div>
+    {props.transactions.map((transaction) => {
+      const canConfirmReceipt = props.user.role === "buyer" && transaction.quantity_received == null && ["in_transit", "delivered"].includes(transaction.status);
+      return <section className="transaction-card panel" key={transaction.id}>
+        <div className="transaction-top"><div><span className="panel-kicker">TRANSACTION #{String(transaction.id).padStart(5, "0")}</span><h2>{transaction.material}</h2><p>{props.user.role === "buyer" ? `Supplier: ${transaction.supplier_name}` : `Buyer: ${transaction.buyer_name}`}</p></div><span className={`table-status ${transaction.status === "completed" ? "active-status" : "pending-status"}`}>{transaction.status.replaceAll("_", " ")}</span></div>
         <div className="transaction-details"><div><span>Declared amount</span><strong>{transaction.quantity_declared.toLocaleString()} {transaction.unit}</strong></div><div><span>Received amount</span><strong>{transaction.quantity_received == null ? "Awaiting confirmation" : `${transaction.quantity_received.toLocaleString()} ${transaction.unit}`}</strong></div><div><span>Total (incl. platform fee)</span><strong>{transaction.currency} {transaction.total.toLocaleString()}</strong></div></div>
-        {props.user.role === "buyer" && transaction.quantity_received == null && <div className="transaction-actions"><label>Quantity received ({transaction.unit})<input type="number" min="0.01" step="0.01" value={quantities[transaction.id] || ""} onChange={(event) => setQuantities({ ...quantities, [transaction.id]: event.target.value })} /></label><button className="button button-dark" disabled={props.busy || !quantities[transaction.id]} onClick={() => props.confirmReceipt(transaction.id, Number(quantities[transaction.id]))}>Confirm receipt <span>↗</span></button></div>}
-        {props.user.role === "buyer" && transaction.status === "payment_pending" && <div className="transaction-actions"><span className="field-help">After paying the supplier directly, record a payment reference.</span><button className="button button-dark" disabled={props.busy} onClick={() => props.recordPayment(transaction.id)}>Record payment reference</button></div>}
+        {props.user.role === "supplier" && transaction.status === "pending_handover" && <div className="transaction-actions"><span className="field-help">When the material leaves you, record the handover for the buyer.</span><button className="button button-dark" disabled={props.busy} onClick={() => props.handover(transaction.id)}>Mark handed over <span>→</span></button></div>}
+        {props.user.role === "buyer" && transaction.quantity_received == null && transaction.status === "pending_handover" && <div className="transaction-actions"><span className="field-help">Waiting for the supplier to record handover before receipt can be confirmed.</span></div>}
+        {canConfirmReceipt && <div className="transaction-actions"><label>Quantity received ({transaction.unit})<input type="number" min="0.01" step="0.01" value={quantities[transaction.id] || ""} onChange={(event) => setQuantities({ ...quantities, [transaction.id]: event.target.value })} /></label><button className="button button-dark" disabled={props.busy || !quantities[transaction.id]} onClick={() => props.confirmReceipt(transaction.id, Number(quantities[transaction.id]))}>Confirm receipt <span>→</span></button></div>}
+        {props.user.role === "buyer" && transaction.status === "payment_pending" && <div className="transaction-actions"><span className="field-help">After paying the supplier directly, record the reference here.</span><button className="button button-dark" disabled={props.busy} onClick={() => props.recordPayment(transaction.id)}>Record payment reference</button></div>}
         {transaction.payments.filter((payment) => payment.status === "pending").map((payment) => (
           <div className="payment-row" key={payment.id}><div><strong>Payment awaiting supplier confirmation</strong><span>{payment.method.replaceAll("_", " ")}{payment.reference ? ` · Ref ${payment.reference}` : ""}</span></div>{props.user.role === "supplier" && transaction.supplier_id === props.user.id && <button className="button button-dark button-small" disabled={props.busy} onClick={() => props.confirmPayment(payment.id)}>Confirm funds received</button>}</div>
         ))}
-      </section>
-    ))}
+        {props.user.role !== "admin" && !["disputed", "cancelled"].includes(transaction.status) && <button className="text-button dispute-action" disabled={props.busy} onClick={() => props.openDispute(transaction.id)}>Report a transaction issue</button>}
+      </section>;
+    })}
     {props.transactions.length === 0 && <EmptyState title="No transactions yet" text="Accepted supplier matches will turn into transaction records here." />}
   </>;
 }
 
-function AdminPage(props: { users: Array<{ user_id: number; name: string; email: string; role: string; business_name?: string; county?: string }>; busy: boolean; review: (id: number, decision: "verified" | "rejected") => void }) {
+function AdminPage(props: {
+  users: Array<{ user_id: number; name: string; email: string; role: string; business_name?: string; county?: string }>;
+  busy: boolean;
+  review: (id: number, decision: "verified" | "rejected") => void;
+  listings: Listing[];
+  matches: Match[];
+  transactions: Transaction[];
+  disputes: Dispute[];
+}) {
   return <>
-    <PageHeading eyebrow="MARKETPLACE OPERATIONS" title="Build trust, one review at a time." description="Verify business accounts before they publish supply or take part in matches." />
+    <PageHeading eyebrow="MARKETPLACE OPERATIONS" title="Trust and activity at a glance." description="Review accounts and monitor the listings, aggregated matches, transactions, and disputes recorded by the marketplace." />
+    <div className="metric-grid">
+      <Metric label="Pending verification" value={props.users.length} note="Supplier and buyer accounts" icon="?" />
+      <Metric label="Active supply" value={props.listings.length} note="Available listings" icon="?" />
+      <Metric label="Matches" value={props.matches.length} note="Backend-generated offers" icon="?" />
+      <Metric label="Open disputes" value={props.disputes.filter((dispute) => !["resolved", "closed"].includes(dispute.status)).length} note={`${props.transactions.length} transactions recorded`} icon="!" />
+    </div>
     <section className="panel table-panel"><div className="panel-head"><div><span className="panel-kicker">NEEDS YOUR REVIEW</span><h2>Pending business accounts <span className="heading-count">{props.users.length}</span></h2></div></div>
-      {props.users.map((account) => <div className="admin-user-row" key={account.user_id}><div className="avatar">{account.name.slice(0, 1)}</div><div className="row-main"><strong>{account.business_name || account.name}</strong><span>{account.name} · {account.email} · {account.county || "County not provided"}</span></div><span className="role-tag">{account.role}</span><div className="admin-actions"><button className="button button-outline button-small" disabled={props.busy} onClick={() => props.review(account.user_id, "rejected")}>Reject</button><button className="button button-dark button-small" disabled={props.busy} onClick={() => props.review(account.user_id, "verified")}>Verify</button></div></div>)}
+      {props.users.map((account) => <div className="admin-user-row" key={account.user_id}><div className="avatar">{account.name.slice(0, 1)}</div><div className="row-main"><strong>{account.business_name || account.name}</strong><span>{account.name} ? {account.email} ? {account.county || "County not provided"}</span></div><span className="role-tag">{account.role}</span><div className="admin-actions"><button className="button button-outline button-small" disabled={props.busy} onClick={() => props.review(account.user_id, "rejected")}>Reject</button><button className="button button-dark button-small" disabled={props.busy} onClick={() => props.review(account.user_id, "verified")}>Verify</button></div></div>)}
       {props.users.length === 0 && <EmptyState title="All caught up" text="No accounts are waiting for verification." />}
     </section>
-    <div className="admin-disclaimer">Verification is an administrative trust decision. The platform does not independently verify physical stock until handover.</div>
+    <div className="admin-disclaimer">Marketplace counts and statuses are read from the API. Matching and aggregation remain backend decisions; physical stock is confirmed at handover.</div>
   </>;
 }
 
+function NotificationsPage(props: {
+  notifications: Notification[];
+  markRead: (id: number) => void;
+  markAllRead: () => void;
+  openLink: (link: string | null) => void;
+}) {
+  const unreadCount = props.notifications.filter((notification) => !notification.read_at).length;
+  return <>
+    <PageHeading eyebrow="ACTIVITY UPDATES" title="Keep up with your marketplace." description="Verification, match, transaction, payment, and dispute updates are saved to your account." action={unreadCount > 0 ? <button className="button button-outline" onClick={props.markAllRead}>Mark all read</button> : undefined} />
+    <section className="panel notification-list">
+      {props.notifications.map((notification) => <article className={`notification-row ${notification.read_at ? "read" : "unread"}`} key={notification.id}>
+        <span className="notification-icon">{notification.read_at ? "?" : "?"}</span>
+        <div className="notification-copy"><div><strong>{notification.title}</strong><span className="role-tag">{notification.type.replaceAll("_", " ")}</span></div><p>{notification.body}</p><time>{new Date(notification.created_at).toLocaleString()}</time></div>
+        {notification.link && <button className="text-button" onClick={() => { props.markRead(notification.id); props.openLink(notification.link); }}>Open ?</button>}
+        {!notification.read_at && <button className="button button-outline button-small" onClick={() => props.markRead(notification.id)}>Mark read</button>}
+      </article>)}
+      {props.notifications.length === 0 && <EmptyState title="No updates yet" text="Account reviews and marketplace workflow changes will appear here." />}
+    </section>
+  </>;
+}
+
+function DisputesPage(props: {
+  user: User;
+  disputes: Dispute[];
+  busy: boolean;
+  sendMessage: (id: number, body: string) => void;
+  resolve: (id: number, resolution: string, notes: string) => void;
+}) {
+  return <>
+    <PageHeading eyebrow="TRANSACTION SUPPORT" title="Disputes, with a clear record." description="Parties can add context to an open issue. An admin records the resolution; AI does not decide disputes." />
+    {props.disputes.map((dispute) => <DisputeCard key={dispute.id} dispute={dispute} user={props.user} busy={props.busy} sendMessage={props.sendMessage} resolve={props.resolve} />)}
+    {props.disputes.length === 0 && <EmptyState title="No disputes on your account" text="If a transaction needs review, open a dispute from its transaction card. Admins can see and respond to all open cases." />}
+  </>;
+}
+
+function DisputeCard(props: {
+  dispute: Dispute;
+  user: User;
+  busy: boolean;
+  sendMessage: (id: number, body: string) => void;
+  resolve: (id: number, resolution: string, notes: string) => void;
+}) {
+  const [resolution, setResolution] = useState("split");
+  const [notes, setNotes] = useState("");
+  const [message, setMessage] = useState("");
+  const isOpen = !["resolved", "closed"].includes(props.dispute.status);
+  const submitMessage = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!message.trim()) return;
+    props.sendMessage(props.dispute.id, message.trim());
+    setMessage("");
+  };
+  return <section className="panel dispute-card">
+    <div className="transaction-top"><div><span className="panel-kicker">DISPUTE #{props.dispute.id} ? TRANSACTION #{props.dispute.transaction_id}</span><h2>{props.dispute.material}</h2><p>{props.dispute.supplier_name} ? {props.dispute.buyer_name}</p></div><span className={`table-status ${isOpen ? "pending-status" : "active-status"}`}>{props.dispute.status.replaceAll("_", " ")}</span></div>
+    <div className="dispute-reason"><strong>Issue reported</strong><p>{props.dispute.reason}</p></div>
+    {props.dispute.messages.map((item) => <div className="dispute-message" key={item.id}><strong>{item.author_name}</strong><p>{item.body}</p><time>{new Date(item.created_at).toLocaleString()}</time></div>)}
+    {isOpen && <form className="dispute-reply" onSubmit={submitMessage}><label htmlFor={`message-${props.dispute.id}`}>Add an update</label><textarea id={`message-${props.dispute.id}`} value={message} onChange={(event) => setMessage(event.target.value)} rows={2} maxLength={4000} required /><button className="button button-outline button-small" disabled={props.busy || !message.trim()}>Send update</button></form>}
+    {!isOpen && <div className="dispute-resolution"><strong>Resolution: {props.dispute.resolution.replaceAll("_", " ")}</strong><p>{props.dispute.resolution_notes || "No resolution note was provided."}</p></div>}
+    {props.user.role === "admin" && isOpen && <div className="dispute-admin-controls"><label>Resolution<select value={resolution} onChange={(event) => setResolution(event.target.value)}><option value="full_buyer">In buyer's favour</option><option value="full_supplier">In supplier's favour</option><option value="split">Shared resolution</option><option value="withdrawn">Withdrawn</option></select></label><label>Admin notes<textarea value={notes} onChange={(event) => setNotes(event.target.value)} rows={2} maxLength={2000} required /></label><button className="button button-dark button-small" disabled={props.busy || !notes.trim()} onClick={() => props.resolve(props.dispute.id, resolution, notes.trim())}>Record resolution</button></div>}
+  </section>;
+}
+
+
 function EmptyState(props: { title: string; text: string }) {
-  return <div className="empty-state"><span>✳</span><strong>{props.title}</strong><p>{props.text}</p></div>;
+  return <div className="empty-state"><span>i</span><strong>{props.title}</strong><p>{props.text}</p></div>;
 }
 
 export default App;

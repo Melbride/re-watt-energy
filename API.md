@@ -246,7 +246,8 @@ Browse active supply listings.
 ### Requirements
 
 #### POST /api/requirements
-Post a buyer requirement (buyers only).
+Post a buyer requirement (buyers only). The buyer's profile must be verified;
+otherwise the API returns `403`.
 
 **Status**: Authenticated (buyer, verified only)  
 **Request**:
@@ -450,6 +451,43 @@ Confirm transaction complete (either party).
   "completed_at": "2024-01-16T14:30:00Z"
 }
 ```
+
+---
+
+### Marketplace notifications and transaction workflows
+
+#### GET /api/notifications
+Return the authenticated user's notifications as a JSON array. Each notification
+includes its `id`, `type`, `title`, `body`, `link`, `meta`, `read_at`, and
+`created_at` fields.
+
+#### POST /api/notifications/{notification_id}/read
+Mark one of the authenticated user's notifications as read.
+
+#### POST /api/notifications/read-all
+Mark all of the authenticated user's notifications as read. Returns the
+`updated_count`.
+
+#### POST /api/transactions/{transaction_id}/handover
+Supplier records a transaction handover. Optional JSON fields are `notes` and
+`evidence`; a successful handover changes the transaction to `in_transit`.
+
+#### POST /api/transactions/{transaction_id}/disputes
+The transaction's buyer or supplier opens one dispute with a required `reason`,
+optional `message`, and optional `claim_quantity`.
+
+#### GET /api/disputes and GET /api/disputes/{dispute_id}
+List the authenticated user's disputes or retrieve a dispute and its messages.
+Administrators can list all disputes via `GET /api/admin/disputes`.
+
+#### POST /api/disputes/{dispute_id}/messages
+Add a message to an unresolved dispute as a transaction party or administrator.
+The request body is `{"body": "Message text"}`.
+
+#### PATCH /api/disputes/{dispute_id}/resolve
+Administrators resolve a dispute with `resolution` (`full_buyer`,
+`full_supplier`, `split`, or `withdrawn`) and required `notes`. The response
+includes serializable transaction context and messages with author names.
 
 ---
 

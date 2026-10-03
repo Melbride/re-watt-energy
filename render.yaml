@@ -25,7 +25,10 @@ services:
           name: rewatt-db
           property: connectionString
       - key: CORS_ORIGINS
-        value: https://rewatt-marketplace.onrender.com
+        fromService:
+          type: web
+          name: rewatt-marketplace
+          property: host
       - key: ADMIN_EMAIL
         sync: false
       - key: ADMIN_PASSWORD
@@ -42,7 +45,10 @@ services:
     staticPublishPath: dist
     envVars:
       - key: VITE_API_URL
-        value: https://rewatt-api.onrender.com/api
+        fromService:
+          type: web
+          name: rewatt-api
+          property: host
     routes:
       - type: rewrite
         source: /*

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from .api.routes.admin import router as admin_router
 from .api.routes.auth import router as auth_router
 from .api.routes.marketplace import router as marketplace_router
+from .api.routes.workflows import router as workflows_router
 from .config import settings
 from .database import SessionLocal, init_db
 from .models import User
@@ -78,6 +79,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix=settings.api_prefix)
 app.include_router(marketplace_router, prefix=settings.api_prefix)
 app.include_router(admin_router, prefix=settings.api_prefix)
+app.include_router(workflows_router, prefix=settings.api_prefix)
 
 
 @app.get("/health", tags=["Operations"])

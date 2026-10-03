@@ -15,6 +15,10 @@ VERIFY → DISCOVER → AGGREGATE → MATCH → TRANSACT → TRACK
 
 **MVP wedge:** maize cobs → biomass processors (briquettes, pellets, biomass fuel).
 
+**Frontend:** React + Vite with React Router, role-aware supplier/buyer/admin workspaces, backend-generated matching, persisted notifications and disputes, and an explicitly illustrative five-supplier demo (5 x 400 kg = a 2,000 kg buyer requirement). The browser presents backend decisions; it does not calculate matches or process payments.
+
+**Deployment:** The intended Render frontend address is [rewatt-marketplace.onrender.com](https://rewatt-marketplace.onrender.com). It is only live after the Render Blueprint in [render.yaml](./render.yaml) has been provisioned and both services are healthy. See [DEPLOYMENT.md](./DEPLOYMENT.md), or [open the Render Blueprint dashboard](https://dashboard.render.com/blueprints); verify the app address after the first deployment.
+
 ---
 
 ## Table of contents
@@ -1121,8 +1125,9 @@ Legend: `[x]` done · `[~]` in progress · `[ ]` not started
 4. **Deploy:**
    - Click "Deploy"
    - Render builds and deploys both services automatically
-   - Your app is live at `https://rewatt-marketplace.onrender.com` (frontend)
-   - API available at the backend service URL
+   - Once the Blueprint deployment is Live, open `https://rewatt-marketplace.onrender.com` (frontend)
+   - The API URL and CORS origin are linked to the deployed Render services by `fromService`
+   - Do not share the app URL as live until `/health` returns `200` and the frontend can load `/api/catalog`
 
 #### Local Development
 
@@ -1178,7 +1183,8 @@ ADMIN_PASSWORD=secure-password-123
 ADMIN_NAME=Admin User
 PLATFORM_FEE_PERCENT=5.0
 EXPOSE_VERIFICATION_CODES=true  # false in production
-CORS_ORIGINS=["http://localhost:5173", "https://rewatt-marketplace.onrender.com"]
+CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+# Render gets its frontend host from the Blueprint service reference.
 ```
 
 **Frontend environment (.env):**

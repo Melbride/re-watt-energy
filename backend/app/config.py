@@ -52,7 +52,13 @@ class Settings(BaseSettings):
 
     @property
     def cors_origin_list(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        origins = []
+        for value in self.cors_origins.split(","):
+            origin = value.strip().rstrip("/")
+            if not origin:
+                continue
+            origins.append(origin if origin.startswith(("http://", "https://")) else f"https://{origin}")
+        return origins
 
     @property
     def is_sqlite(self) -> bool:

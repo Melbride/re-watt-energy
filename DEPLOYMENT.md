@@ -11,7 +11,9 @@ The Re-Watt Energy application is a full-stack marketplace with:
 - **Frontend**: React TypeScript SPA
 - **Infrastructure**: Render.com (auto-configures via `render.yaml`)
 
-**Live URL** (after deployment): `https://rewatt-marketplace.onrender.com`
+**Frontend URL** (after the Blueprint is deployed successfully): [https://rewatt-marketplace.onrender.com](https://rewatt-marketplace.onrender.com)
+
+The Render URL has not been activated merely by adding `render.yaml` to GitHub. The Blueprint must be created in Render and both services must reach **Live** before this address serves the application.
 
 ---
 
@@ -23,29 +25,30 @@ The Re-Watt Energy application is a full-stack marketplace with:
 
 ---
 
-## Step 1: Connect GitHub to Render
+## Step 1: Create the Render Blueprint
 
 1. Visit https://dashboard.render.com
-2. Click **"New"** → **"Web Service"**
-3. Select **"Connect your GitHub account"**
-4. Authorize Render to access your GitHub repositories
-5. Search for and select **`h98982360-cell/re-watt-energy`**
-
----
+2. Select **New > Blueprint** (do not create only a Web Service)
+3. Connect GitHub and authorize Render to access the repository
+4. Select **`h98982360-cell/re-watt-energy`** and its root-level `render.yaml`
+5. Review the API, frontend static site, database, and prompted admin credentials
+6. Apply the Blueprint to create and deploy all resources
 
 ## Step 2: Render Auto-Configures Services
 
-Render automatically reads `render.yaml` and creates:
+Applying the Blueprint reads `render.yaml` and creates the following resources. A push to GitHub alone does not create these services:
 
 1. **rewatt-api** service (FastAPI backend)
    - Runtime: Python 3.12
-   - Build command: `pip install -r backend/requirements.txt`
-   - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+   - Build command: `pip install -r requirements.txt` (service root: `backend`)
+   - Start command initializes the schema, then starts Uvicorn
+   - Health check: `/health`
 
 2. **rewatt-marketplace** service (React frontend)
    - Static site deployment
-   - Build command: `cd frontend && npm install && npm run build`
-   - Serves files from `frontend/dist/`
+   - Build command: `npm ci && npm run build` (service root: `frontend`)
+   - Serves files from `dist/`; all app routes rewrite to `index.html`
+   - Gets the API host from the `rewatt-api` service reference at build time
 
 3. **PostgreSQL Database**
    - Auto-provisioned with free tier
@@ -55,7 +58,7 @@ Render automatically reads `render.yaml` and creates:
 
 ## Step 3: Set Environment Variables
 
-Render automatically generates some variables. You must set these manually:
+The Blueprint dynamically wires the API host and frontend CORS host. During first-time Blueprint creation, provide the admin credentials prompted by Render:
 
 ### For the `rewatt-api` service:
 
@@ -66,13 +69,11 @@ Render automatically generates some variables. You must set these manually:
 ```
 ADMIN_EMAIL=admin@example.com
 ADMIN_PASSWORD=YourSecureAdminPassword123
-ADMIN_NAME=Platform Admin
-SECRET_KEY=your-secret-key-min-32-chars-change-this
+ADMIN_NAME=Re-Watt Administrator
 EXPOSE_VERIFICATION_CODES=false
-CORS_ORIGINS=["https://rewatt-marketplace.onrender.com"]
 ```
 
-**Important:** Replace `YourSecureAdminPassword123` and `SECRET_KEY` with unique, strong values.
+**Important:** Use a unique admin password of at least 12 characters. Render generates `SECRET_KEY` automatically. `DATABASE_URL`, `VITE_API_URL`, and the API's CORS origin are wired through the Blueprint; do not replace those references with guessed hostnames.
 
 ### Automatically Set by Render:
 - `DATABASE_URL` - PostgreSQL connection string
@@ -82,12 +83,12 @@ CORS_ORIGINS=["https://rewatt-marketplace.onrender.com"]
 
 ## Step 4: Deploy
 
-1. Click **"Deploy"** button in the Render dashboard
-2. Wait for both services to deploy (approximately 3-5 minutes)
+1. Apply/create the Blueprint and start its initial deploy
+2. Wait for the database, API, and static site to deploy (free services can take several minutes to wake up)
 3. Check service status:
    - `rewatt-api` should show "Live" (green)
    - `rewatt-marketplace` should show "Live" (green)
-4. Copy the service URLs for later testing
+4. Open the generated static-site URL; if it differs from `https://rewatt-marketplace.onrender.com`, use the service URL shown in Render. Check the API's `/health` route before testing login.
 
 ---
 
@@ -108,7 +109,7 @@ Expected response:
 
 ### Test Frontend
 
-Visit: `https://rewatt-marketplace.onrender.com`
+Open the static-site URL displayed by Render (the expected default is `https://rewatt-marketplace.onrender.com`).
 
 You should see:
 - Landing page with Re-Watt logo
@@ -127,7 +128,7 @@ You'll see interactive Swagger UI for all API endpoints.
 
 ### 1. Register a Supplier
 
-1. Open `https://rewatt-marketplace.onrender.com`
+1. Open the deployed static-site URL shown in Render
 2. Click **"Supplier Sign Up"**
 3. Fill in:
    - Name: "Test Supplier"
@@ -158,7 +159,7 @@ Repeat steps 1-4 with role **"Buyer"** and different email.
 
 ### 4. Supplier Creates Listing
 
-1. Log in as supplier at `https://rewatt-marketplace.onrender.com`
+1. Log in as supplier at the deployed static-site URL
 2. Click **Listings** in sidebar
 3. Click **"Create Listing"**
 4. Fill in:
@@ -211,7 +212,7 @@ Repeat steps 1-4 with role **"Buyer"** and different email.
 ### "Cannot connect to API" Error in Frontend
 - **Cause**: CORS blocked or API URL wrong
 - **Solution**:
-  1. Check `CORS_ORIGINS` in env vars includes `https://rewatt-marketplace.onrender.com`
+  1. Confirm the API service's `CORS_ORIGINS` references the actual static-site host through the Blueprint
   2. Verify API service is running (check Render dashboard)
   3. Check browser console for exact error URL
 
@@ -315,4 +316,4 @@ If deployment fails:
 
 **Deployment completed! Your Re-Watt Energy marketplace is now LIVE. 🚀**
 
-Visit: `https://rewatt-marketplace.onrender.com`
+Visit the static-site URL shown in your Render dashboard after the Blueprint is Live.
