@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -31,14 +32,23 @@ class Settings(BaseSettings):
     platform_fee_percent: float = 5.0
     currency: str = "KES"
 
-    admin_email: str = "admin@rewatt.energy"
-    admin_password: str = "ChangeMe!2026"
+    admin_email: str = ""
+    admin_password: str = ""
     admin_name: str = "Platform Admin"
 
     llm_api_key: str = ""
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
     llm_timeout_seconds: float = 30.0
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def use_psycopg3_driver(cls, value: str) -> str:
+        if value.startswith("postgres://"):
+            return value.replace("postgres://", "postgresql+psycopg://", 1)
+        if value.startswith("postgresql://"):
+            return value.replace("postgresql://", "postgresql+psycopg://", 1)
+        return value
 
     @property
     def cors_origin_list(self) -> list[str]:

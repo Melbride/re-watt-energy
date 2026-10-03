@@ -7,11 +7,11 @@ from sqlalchemy import (
     Boolean,
     Column,
     DateTime,
-    Decimal as SqlDecimal,
     ForeignKey,
     Index,
     Integer,
     JSON,
+    Numeric as SqlDecimal,
     String,
     Text,
     UniqueConstraint,
@@ -234,15 +234,14 @@ class MatchItem(Base):
     status: Mapped[str] = mapped_column(String(32), default="invited", nullable=False)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     response_note: Mapped[str | None] = mapped_column(Text, nullable=True)
-    transaction_id: Mapped[int | None] = mapped_column(
-        ForeignKey("transactions.id"), nullable=True
-    )
-
     match: Mapped["Match"] = relationship("Match", back_populates="items")
     listing: Mapped["Listing"] = relationship("Listing", back_populates="match_items")
     supplier_user: Mapped["User"] = relationship("User", back_populates="match_items")
     transaction: Mapped["Transaction | None"] = relationship(
-        "Transaction", back_populates="match_item", uselist=False
+        "Transaction",
+        back_populates="match_item",
+        foreign_keys="Transaction.match_item_id",
+        uselist=False,
     )
 
     __table_args__ = (
@@ -299,7 +298,10 @@ class Transaction(Base, TimestampMixin):
 
     match: Mapped["Match | None"] = relationship("Match", back_populates="transactions")
     match_item: Mapped["MatchItem | None"] = relationship(
-        "MatchItem", back_populates="transaction", uselist=False
+        "MatchItem",
+        back_populates="transaction",
+        foreign_keys=[match_item_id],
+        uselist=False,
     )
     listing: Mapped["Listing"] = relationship("Listing", back_populates="transactions")
     supplier: Mapped["User"] = relationship(

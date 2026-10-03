@@ -6,10 +6,10 @@ from decimal import Decimal
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Decimal as SqlDecimal,
     ForeignKey,
     Index,
     Integer,
+    Numeric as SqlDecimal,
     JSON,
     String,
     Text,
@@ -36,13 +36,24 @@ class User(Base, TimestampMixin):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     supplier_profile: Mapped["SupplierProfile | None"] = relationship(
-        "SupplierProfile", back_populates="user", uselist=False, cascade="all, delete-orphan"
+        "SupplierProfile",
+        back_populates="user",
+        foreign_keys="SupplierProfile.user_id",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
     buyer_profile: Mapped["BuyerProfile | None"] = relationship(
-        "BuyerProfile", back_populates="user", uselist=False, cascade="all, delete-orphan"
+        "BuyerProfile",
+        back_populates="user",
+        foreign_keys="BuyerProfile.user_id",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
     verifications: Mapped[list["VerificationRecord"]] = relationship(
-        "VerificationRecord", back_populates="user", cascade="all, delete-orphan"
+        "VerificationRecord",
+        back_populates="user",
+        foreign_keys="VerificationRecord.user_id",
+        cascade="all, delete-orphan",
     )
     listings: Mapped[list["Listing"]] = relationship(
         "Listing", back_populates="supplier", cascade="all, delete-orphan"
@@ -77,6 +88,16 @@ class User(Base, TimestampMixin):
     payments_received: Mapped[list["Payment"]] = relationship(
         "Payment", foreign_keys="Payment.payee_id", back_populates="payee",
     )
+    transactions_as_supplier: Mapped[list["Transaction"]] = relationship(
+        "Transaction",
+        foreign_keys="Transaction.supplier_id",
+        back_populates="supplier",
+    )
+    transactions_as_buyer: Mapped[list["Transaction"]] = relationship(
+        "Transaction",
+        foreign_keys="Transaction.buyer_id",
+        back_populates="buyer",
+    )
     __table_args__ = (Index("ix_users_role_status", "role", "status"),)
 
 
@@ -100,7 +121,9 @@ class SupplierProfile(Base, TimestampMixin):
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     verified_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
-    user: Mapped["User"] = relationship("User", back_populates="supplier_profile")
+    user: Mapped["User"] = relationship(
+        "User", back_populates="supplier_profile", foreign_keys=[user_id]
+    )
 
 
 class BuyerProfile(Base, TimestampMixin):
@@ -123,7 +146,9 @@ class BuyerProfile(Base, TimestampMixin):
     verified_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     intended_use_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    user: Mapped["User"] = relationship("User", back_populates="buyer_profile")
+    user: Mapped["User"] = relationship(
+        "User", back_populates="buyer_profile", foreign_keys=[user_id]
+    )
 
 
 class VerificationRecord(Base, TimestampMixin):
@@ -143,6 +168,8 @@ class VerificationRecord(Base, TimestampMixin):
     review_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
-    user: Mapped["User"] = relationship("User", back_populates="verifications")
+    user: Mapped["User"] = relationship(
+        "User", back_populates="verifications", foreign_keys=[user_id]
+    )
 
     __table_args__ = (Index("ix_verifications_user_type", "user_id", "type"),)
