@@ -338,7 +338,7 @@ def create_match(
     allocations = allocate_supply(requirement, candidates)
     if not allocations:
         raise HTTPException(status_code=404, detail="No compatible active supply was found yet.")
-    matched_quantity = sum((allocation["quantity_base"] for allocation in allocations), Decimal("0"))
+    matched_quantity = sum((Decimal(listing.quantity_available_base) for listing in candidates), Decimal("0"))
     coverage = (matched_quantity / Decimal(requirement.quantity_base) * 100).quantize(
         Decimal("0.0001"), rounding=ROUND_HALF_UP
     )
@@ -348,7 +348,7 @@ def create_match(
         status=MatchStatus.REQUESTED.value,
         requested_quantity_base=requirement.quantity_base,
         matched_quantity_base=matched_quantity,
-        supplier_count=len({allocation["listing"].supplier_id for allocation in allocations}),
+        supplier_count=len({listing.supplier_id for listing in candidates}),
         coverage_percent=coverage,
         requested_at=datetime.now(timezone.utc),
         source="buyer_search",

@@ -188,7 +188,7 @@ def test_requirement_insight_sends_backend_match_facts(client, monkeypatch):
                 },
                 "match_result": {
                     "supplier_count": 1,
-                    "matched_quantity": 400.0,
+                    "matched_quantity": 500.0,
                     "required_quantity": 400.0,
                     "quantity_sufficient": True,
                     "material_compatible": True,

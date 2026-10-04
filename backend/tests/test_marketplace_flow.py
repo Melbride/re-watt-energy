@@ -209,8 +209,9 @@ def test_aggregated_match_supplier_acceptance_and_transaction(client: TestClient
     assert match_response.status_code == 201, match_response.text
     match = match_response.json()
     assert match["supplier_count"] == 2
-    assert match["coverage_percent"] == 100
-    assert match["matched_quantity"] == 1100
+    assert match["coverage_percent"] > 100
+    assert match["matched_quantity"] == 1300
+    assert match["surplus"] == 200
     assert sum(float(item["quantity"]) for item in match["items"]) == 1100
 
     assert client.post(
@@ -250,3 +251,85 @@ def test_aggregated_match_supplier_acceptance_and_transaction(client: TestClient
     )
     assert confirmed.status_code == 200
     assert confirmed.json()["transaction_status"] == "completed"
+
+
+def test_buyer_requirement_detail_exact_maize_cobs_aggregation(client: TestClient) -> None:
+    buyer_token, _ = register(
+        client,
+        email="maize-buyer@example.com",
+        role="buyer",
+        business_name="Biomass Processor",
+    )
+    supplier_accounts = [
+        register(
+            client,
+            email=f"maize-supplier-{index}@example.com",
+            role="supplier",
+            business_name=f"Maize Supplier {index}",
+            supplier_type="farmer",
+        )
+        for index in range(1, 6)
+    ]
+
+    admin_login = client.post(
+        "/api/auth/login",
+        json={"email": "admin@example.com", "password": "safe-admin-password-123"},
+    )
+    admin_token = admin_login.json()["access_token"]
+    for _, supplier in supplier_accounts:
+        verified = client.patch(
+            f"/api/admin/verifications/{supplier['id']}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={"decision": "verified"},
+        )
+        assert verified.status_code == 200, verified.text
+
+    catalog = client.get("/api/catalog").json()
+    maize = next(material for item in catalog for material in item["materials"] if material["slug"] == "maize-cobs")
+    for (supplier_token, _), amount in zip(supplier_accounts, (400, 500, 450, 350, 450)):
+        response = client.post(
+            "/api/listings",
+            headers={"Authorization": f"Bearer {supplier_token}"},
+            json={
+                "material_id": maize["id"],
+                "title": "Dry maize cobs",
+                "condition": "dry",
+                "quantity": amount,
+                "unit": "kg",
+                "price_per_unit": 50,
+                "county": "Kiambu",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    requirement_response = client.post(
+        "/api/requirements",
+        headers={"Authorization": f"Bearer {buyer_token}"},
+        json={
+            "material_id": maize["id"],
+            "title": "Maize cobs for biomass processing",
+            "quantity": 2000,
+            "unit": "kg",
+            "acceptable_conditions": ["dry"],
+            "delivery_counties": ["Kiambu"],
+            "target_price_per_unit": 50,
+            "required_by": "2026-10-10",
+            "intended_use": "Biomass Processing",
+            "currency": "KES",
+        },
+    )
+    assert requirement_response.status_code == 201, requirement_response.text
+
+    match_response = client.post(
+        f"/api/requirements/{requirement_response.json()['id']}/matches",
+        headers={"Authorization": f"Bearer {buyer_token}"},
+    )
+    assert match_response.status_code == 201, match_response.text
+    match = match_response.json()
+    assert match["quantity_sufficient"] is True
+    assert match["matched_quantity"] == 2150
+    assert match["requested_quantity"] == 2000
+    assert match["supplier_count"] == 5
+    assert match["surplus"] == 150
+    assert match["shortfall"] == 0
+    assert sum(float(item["quantity"]) for item in match["items"]) == 2000
