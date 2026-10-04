@@ -17,6 +17,11 @@ type View = "overview" | "supply" | "listings" | "requirements" | "matches" | "t
 
 const TOKEN_KEY = "rewatt.accessToken";
 const conditions = ["dry", "wet", "mixed", "contaminated", "processed", "unsorted", "unknown"];
+const terminalMatchStatuses = new Set(["declined", "cancelled", "expired"]);
+
+function isCurrentMatch(match: Match): boolean {
+  return !terminalMatchStatuses.has(match.status);
+}
 
 function App() {
   const [token, setToken] = useState<string | null>(() => sessionStorage.getItem(TOKEN_KEY));
@@ -135,7 +140,7 @@ function App() {
   const refreshRequirementMatch = useCallback(async (requirementId: number) => {
     if (!token) return null;
     const currentMatches = await api<Match[]>("/matches", {}, token);
-    const existingMatch = currentMatches.find((match) => match.requirement_id === requirementId);
+    const existingMatch = currentMatches.find((match) => match.requirement_id === requirementId && isCurrentMatch(match));
     setMatches(currentMatches);
     if (existingMatch) return existingMatch;
     try {
@@ -521,8 +526,8 @@ function App() {
           {activeView === "requirement-detail" && (
             <RequirementDetailPage
               requirement={requirements.find((r) => r.id === selectedRequirementId) ?? null}
-              match={matches.find((m) => m.requirement_id === selectedRequirementId) ?? null}
-              transactions={transactions.filter((t) => matches.find((m) => m.requirement_id === selectedRequirementId && m.id === t.match_id))}
+              match={matches.find((m) => m.requirement_id === selectedRequirementId && isCurrentMatch(m)) ?? null}
+              transactions={transactions.filter((t) => matches.find((m) => m.requirement_id === selectedRequirementId && isCurrentMatch(m) && m.id === t.match_id))}
               user={user}
               token={token}
               busy={busy}
@@ -968,7 +973,7 @@ function RequirementsPage(props: { requirements: Requirement[]; materials: Mater
     <section className="panel table-panel">
       <div className="panel-head"><div><span className="panel-kicker">YOUR BUYER DESK</span><h2>Open requirements <span className="heading-count">{props.requirements.length}</span></h2></div></div>
       {props.requirements.map((item) => {
-        const match = props.matches.find((m) => m.requirement_id === item.id);
+        const match = props.matches.find((m) => m.requirement_id === item.id && isCurrentMatch(m));
         let stageLabel = "SEARCHING FOR SUPPLY";
         let stageCls = "stage-searching";
         if (match) {

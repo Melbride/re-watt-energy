@@ -348,7 +348,7 @@ def create_match(
         status=MatchStatus.REQUESTED.value,
         requested_quantity_base=requirement.quantity_base,
         matched_quantity_base=matched_quantity,
-        supplier_count=len(allocations),
+        supplier_count=len({allocation["listing"].supplier_id for allocation in allocations}),
         coverage_percent=coverage,
         requested_at=datetime.now(timezone.utc),
         source="buyer_search",
